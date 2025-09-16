@@ -75,18 +75,6 @@ Y = mlp(
 # Train on BLCA dataset with all modalities
 bash running_scripts/survival_prediction_mainmoe.sh
 
-# Train with missing RNA modality (50% patients)
-bash running_scripts/train_blca_missing_rna.sh
-```
-
-### Multi-Cancer Training
-
-```bash
-# Train across multiple cancer types
-bash running_scripts/train_multi.sh --cancers "BLCA_LUAD_BRCA"
-```
-
-
 ## Configuration
 
 Model configurations are stored in `model/config/`
