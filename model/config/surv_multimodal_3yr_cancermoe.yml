@@ -1,0 +1,37 @@
+modality:
+  img:
+    modality_name: img
+    path: data/tcga-dataset
+    feature_dim: 2048
+    
+
+  text:
+    modality_name: text
+    path: data/text_embeddings/TCGA_32types_text_embedding
+    # path: data/text_embeddings/TEXT_EMBEDDING
+    feature_dim: 768
+
+  rna:
+    modality_name: rna
+    path: data/RNA_embedding/TCGA_32types_embeddings_2048
+    # path: data/RNA_embedding
+    feature_dim: 256
+
+network_type: CancerMoE
+
+
+task_type: 3_year_prediction
+#cancer_types: BRCA_BLCA_LUAD
+# _LGG_BRCA
+cancer_types: PAAD
+# ACC_BLCA_BRCA_CESC_CHOL_COAD_DLBC_ESCA_GBM_HNSC_KICH_KIRC_KIRP_LGG_LIHC_LUAD_LUSC_MESO_OV_PAAD_PCPG_PRAD_READ_SARC_SKCM_STAD_TGCT_THCA_THYM_UCEC_UCS_UVM
+img_select: all
+
+network:
+  hidden_size: 512
+  dropout_rate: 0.5
+  pred_dim: 2
+  mlp_ratio: 4
+  n_token: 128
+  n_backbone: 8
+  num_experts: 16

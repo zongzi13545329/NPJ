@@ -1,0 +1,43 @@
+modality:
+  img:
+    modality_name: img
+    path: data/tcga-dataset
+    feature_dim: 2048
+    
+
+  text:
+    modality_name: text
+    # path: data/text_embeddings/TEXT_EMBEDDING
+    path: data/text_embeddings/TCGA_32types_text_embedding
+    feature_dim: 768
+
+  rna:
+    modality_name: rna
+    # path: data/RNA_embedding
+    path: data/RNA_embedding/TCGA_32types_embeddings_2048
+    feature_dim: 256
+
+network_type: MainModalityMoE 
+
+
+task_type: surv
+#cancer_types: BRCA_BLCA_LUAD
+cancer_types: BLCA
+img_select: all
+network:
+  hidden_size: 32
+  dropout_rate: 0.2
+  pred_dim: 4 #same with time bin
+  mlp_ratio: 2
+  n_token: 128
+  n_backbone: 1
+  num_experts: 1
+# network:
+#   hidden_size: 64
+#   dropout_rate: 0.5
+#   pred_dim: 4
+#   mlp_ratio: 4
+#   n_token: 128
+#   n_backbone: 2
+#   num_experts: 4
+#   topk: 1
