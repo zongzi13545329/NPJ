@@ -68,7 +68,9 @@ Y = mlp(
 ```
 
 ## Running Experiments
-
+### Download data files from Google Drive
+### Visit: https://drive.google.com/drive/folders/1cPX564Bj2jNXfWKmqzVJse56UB3vyXZU?usp=sharing
+### Download the entire 'data' folder and place it in the current directory
 ### Single Cancer Type (Example)
 
 ```bash
