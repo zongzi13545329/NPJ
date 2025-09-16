@@ -1,0 +1,15 @@
+LICENSE
+README.md
+setup.py
+scattermoe/__init__.py
+scattermoe/mlp.py
+scattermoe/parallel_experts.py
+scattermoe.egg-info/PKG-INFO
+scattermoe.egg-info/SOURCES.txt
+scattermoe.egg-info/dependency_links.txt
+scattermoe.egg-info/requires.txt
+scattermoe.egg-info/top_level.txt
+scattermoe/kernels/__init__.py
+scattermoe/kernels/ops.py
+scattermoe/kernels/single.py
+tests/test_mlp.py

@@ -1,0 +1,27 @@
+modality:
+  img:
+    modality_name: img
+    path: data/tcga-dataset/tcga_lung_data_feats
+    feature_dim: 512
+
+  text:
+    modality_name: text
+    path: data/text_embeddings/TCGA_Reports_5types_2k_text_embeddings.csv
+    feature_dim: 768
+
+  rna:
+    modality_name: rna
+    path: data/RNA_embedding/TCGA_5types_patients_embeddings.csv
+    feature_dim: 256
+
+network_type: EarlyFusion
+
+task_type: cls
+cancer_type: LGG
+img_select: random
+
+network:
+  hidden_size: 128
+  dropout_rate: 0.5
+  pred_dim: 4
+  mlp_ratio: 4
