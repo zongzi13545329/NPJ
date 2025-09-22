@@ -709,7 +709,7 @@ class LiMoEFusion(nn.Module):
                  n_token=16, n_backbone=3, n_head=4) -> None:
         super(LiMoEFusion, self).__init__()
         self.device = device
-        self.modalities = list(modalities.keys())  # 保存顺序
+        self.modalities = list(modalities.keys()) 
 
         self.m_projector = nn.ModuleDict({
             mm: nn.Sequential(
@@ -750,32 +750,26 @@ class LiMoEFusion(nn.Module):
         return tmp_loss
 
     def forward(self, all_modalities):
-        # 1. 对每个模态做 QFormer 投影
         input_data = {
             mm: self.m_projector[mm](all_modalities[mm])
             for mm in all_modalities
         }
 
-        # 2. 拼接所有模态，并记录每个模态的 token 数
         input_list = [input_data[mm] for mm in self.modalities]
         modality_lengths = [x.shape[1] for x in input_list]  # 每个模态的 token 数
         x_cat = torch.cat(input_list, dim=1)  # dim=1 表示时间维度拼接
 
-        # 3. 送入 backbone，逐层传入 modality_lengths
         for blk in self.backbone:
             x_cat = blk(x_cat, modality_length=modality_lengths)
 
-        # 4. 为 LiMoE 损失做准备：把拼接前的表示也保留
         limoe_loss = self.calc_limoe_loss(input_list)
         router_loss = self.get_router_loss()
         self.ret_loss = limoe_loss + router_loss
 
-        # 5. 拼接所有模态表示的平均值（取 token 平均）
         x_split = torch.split(x_cat, modality_lengths, dim=1)
         pooled = [m.mean(dim=1) for m in x_split]
         fused = torch.cat(pooled, dim=-1)
 
-        # 6. 输出
         logits = self.head(fused)
         return logits
 
@@ -884,12 +878,6 @@ class CancerMoE(nn.Module):
                 tmp_loss += mm.calc_balance_loss()
         return tmp_loss
     
-    # def set_moe_modality(self, modality_length):
-    #     for item in self.backbone:
-    #         if type(item.mlp) == SparseMoeBlock:
-    #             item.modality_length = modality_length
-
-    
     def forward(self, all_modalities):
         # early fusion
         # for mm in all_modalities:
@@ -951,17 +939,16 @@ class GatedFusion(nn.Module):
         cat = torch.cat(all_reps, dim=-1)  # [B, hidden_dim * M]
         gate_logits = self.gate(cat)       # [B, M]
 
-        # 设置无效模态的 gate 权重为 -inf
         mask_tensor = torch.tensor(masks, device=cat.device, dtype=torch.float32).unsqueeze(0)  # [1, M]
         inf_mask = (mask_tensor == 0).float() * (-1e9)
-        gate_logits = gate_logits + inf_mask  # 无效模态 logits = -1e9
+        gate_logits = gate_logits + inf_mask  
 
         gate_weights = torch.softmax(gate_logits, dim=-1)  # [B, M]
         gated = torch.stack(all_reps, dim=1)  # [B, M, D]
         gate_weights = gate_weights.unsqueeze(-1)  # [B, M, 1]
         return (gate_weights * gated).sum(dim=1)  # [B, D]
 
-class SurvivalHead(nn.Module):  # ✅ 新增
+class SurvivalHead(nn.Module):  
     def __init__(self, input_dim, n_bins):
         super().__init__()
         self.hazard_layer = nn.Linear(input_dim, n_bins)
@@ -1001,7 +988,6 @@ class MainModalityMoE(nn.Module):
             ) for _ in range(n_backbone)]
         )
 
-        # ✅ 替换：生存分析专用 head
         # self.surv_head = SurvivalHead(hidden_size, n_bins=pred_dim)
         self.surv_heads = nn.ModuleDict({
             ct: SurvivalHead(hidden_size, n_bins=pred_dim) for ct in self.cancer_types
@@ -1043,412 +1029,7 @@ class MainModalityMoE(nn.Module):
         surv = torch.cat(survs, dim=0)      # [B, T]
         return hazard, surv
 
-class DeformableCrossAttention(nn.Module):
-    def __init__(self, embed_dim, num_heads=4, num_points=4):
-        super().__init__()
-        self.num_heads = num_heads
-        self.num_points = num_points
-        self.embed_dim = embed_dim
 
-        self.offset_mlp = nn.Linear(embed_dim, num_heads * num_points)
-        self.attn_mlp = nn.Linear(embed_dim, num_heads * num_points)
-        self.proj = nn.Linear(embed_dim * num_heads, embed_dim)
-
-    def forward(self, query, key, value):
-        B, Lq, C = query.shape
-        if key is None or value is None:
-            return query
-
-        Lk = key.size(1)
-        offset_logits = self.offset_mlp(query)
-        attn_logits = self.attn_mlp(query)
-
-        offset_logits = offset_logits.view(B, Lq, self.num_heads, self.num_points)
-        attn_logits = attn_logits.view(B, Lq, self.num_heads, self.num_points)
-
-        sampling_locations = offset_logits.sigmoid() * (Lk - 1)
-        sampling_locations = sampling_locations.long().clamp(0, Lk - 1)
-
-        sampled_keys = []
-        sampled_values = []
-        for b in range(B):
-            sampled_keys.append(key[b][sampling_locations[b]])
-            sampled_values.append(value[b][sampling_locations[b]])
-        sampled_keys = torch.stack(sampled_keys, dim=0)
-        sampled_values = torch.stack(sampled_values, dim=0)
-
-        attn_scores = (query.unsqueeze(2).unsqueeze(3) * sampled_keys).sum(-1) / (C ** 0.5)
-        attn_scores = attn_scores + attn_logits
-        attn_weights = torch.softmax(attn_scores, dim=-1)
-
-        attn_out = (attn_weights.unsqueeze(-1) * sampled_values).sum(dim=3)
-        attn_out = attn_out.flatten(2)
-
-        return self.proj(attn_out)
-
-class DeformableTransformerEncoderLayer(nn.Module):
-    def __init__(self, d_model, nhead, dim_feedforward=2048, dropout=0.1, num_points=4):
-        super().__init__()
-        self.self_attn = DeformableCrossAttention(d_model, nhead, num_points)
-        self.linear1 = nn.Linear(d_model, dim_feedforward)
-        self.dropout = nn.Dropout(dropout)
-        self.linear2 = nn.Linear(dim_feedforward, d_model)
-
-        self.norm1 = nn.LayerNorm(d_model)
-        self.norm2 = nn.LayerNorm(d_model)
-
-        self.dropout1 = nn.Dropout(dropout)
-        self.dropout2 = nn.Dropout(dropout)
-
-        self.activation = nn.GELU()
-
-    def forward(self, src):
-        src2 = self.self_attn(src, src, src)
-        src = src + self.dropout1(src2)
-        src = self.norm1(src)
-
-        src2 = self.linear2(self.dropout(self.activation(self.linear1(src))))
-        src = src + self.dropout2(src2)
-        src = self.norm2(src)
-        return src
-
-class ImageProjector(nn.Module):
-    def __init__(self, input_dim, n_token, hidden_dim):
-        super().__init__()
-        self.conv1 = nn.Conv1d(input_dim, hidden_dim, kernel_size=3, padding=1)
-        self.pool = nn.AdaptiveAvgPool1d(n_token)
-        self.norm = nn.LayerNorm(hidden_dim)
-
-    def forward(self, x):
-        x = x.transpose(1, 2)
-        x = self.conv1(x)
-        x = self.pool(x)
-        x = x.transpose(1, 2)
-        x = self.norm(x)
-        return x
-
-class DenseCrossAttention(nn.Module):
-    def __init__(self, embed_dim, num_heads=4):
-        super().__init__()
-        self.embed_dim = embed_dim
-        self.num_heads = num_heads
-
-        self.attn = nn.MultiheadAttention(embed_dim, num_heads, batch_first=True)
-        self.proj = nn.Linear(embed_dim, embed_dim)
-
-    def forward(self, query, key, value):
-        if key is None or value is None:
-            return query
-
-        attn_output, _ = self.attn(query, key, value)
-        return self.proj(attn_output)
-
-
-class MainModalityDeformableMoE(nn.Module):
-    def __init__(self, device, modalities, hidden_size, dropout_rate=0.1, pred_dim=20, mlp_ratio=4, 
-                 n_token=16, n_backbone=1, n_head=4, num_experts=4, topk=2, num_points=8):
-        super(MainModalityDeformableMoE, self).__init__()
-        self.device = device
-        self.modalities = list(modalities.keys())
-
-        self.m_projector = nn.ModuleDict({
-            mm: nn.Sequential(
-                nn.Linear(modalities[mm].feature_dim, hidden_size),
-                nn.ReLU(),
-                nn.Dropout(dropout_rate)
-            ) for mm in self.modalities
-        })
-
-        self.fusion = GatedFusion(hidden_size, num_modalities=len(self.modalities))
-
-        self.backbone = nn.Sequential(
-            *[DeformableTransformerEncoderLayer(
-                d_model=hidden_size,
-                nhead=n_head,
-                dim_feedforward=hidden_size * mlp_ratio,
-                dropout=dropout_rate,
-                num_points=num_points
-            ) for _ in range(n_backbone)]
-        )
-
-        self.head = nn.Linear(hidden_size, pred_dim)  # pred_dim = number of discrete time bins
-        self.logits_dim = pred_dim
-
-    def forward(self, all_modalities):
-        input_data = {}
-        for mm in self.m_projector.keys():
-            if mm not in all_modalities:
-                input_data[mm] = None
-                continue
-
-            x = all_modalities[mm]
-            if x.dim() > 2:
-                x = x.mean(dim=1)
-            mask_key = f"{mm}_mask"
-            if mask_key in all_modalities and all_modalities[mask_key].sum() == 0:
-                input_data[mm] = None
-            else:
-                input_data[mm] = self.m_projector[mm](x)
-
-        input_list = [input_data.get(mm, None) for mm in self.m_projector.keys()]
-        fused = self.fusion(input_list).unsqueeze(1)  # [B, 1, hidden_size]
-
-        backbone_out = self.backbone(fused)           # [B, 1, hidden_size]
-        pooled = backbone_out.mean(dim=1)             # [B, hidden_size]
-
-        hazard_logits = self.head(pooled)             # [B, pred_dim]
-        hazards = torch.sigmoid(hazard_logits)        # probability of event at each bin
-        survival = torch.cumprod(1 - hazards, dim=1)  # [B, pred_dim]
-
-        return hazards, survival
-
-
-
-class DEMainModalityMILMoE(nn.Module):
-    def __init__(self, device, modalities, hidden_size=256, dropout_rate=0.1, pred_dim=20, mlp_ratio=4, 
-                 n_token=1024, n_backbone=6, n_head=4, top_k=128):
-        super().__init__()
-        self.device = device
-        self.modalities = list(modalities.keys())
-        self.hidden_size = hidden_size
-        self.n_token = n_token
-        self.top_k = top_k
-
-        self.m_projector = nn.ModuleDict({
-            mm: nn.Sequential(
-                nn.Linear(modalities[mm].feature_dim, hidden_size),
-                nn.ReLU(),
-                nn.Dropout(dropout_rate)
-            ) for mm in modalities
-        })
-
-        self.missing_text_token = nn.Parameter(torch.randn(1, 1, hidden_size))
-
-        self.cross_text = DenseCrossAttention(hidden_size, n_head)
-        self.cross_rna = DenseCrossAttention(hidden_size, n_head)
-
-        self.token_scorer = nn.Linear(hidden_size, 1)
-
-        self.backbone = nn.Sequential(
-            *[DeformableTransformerEncoderLayer(
-                d_model=hidden_size,
-                nhead=n_head,
-                dim_feedforward=hidden_size * mlp_ratio,
-                dropout=dropout_rate,
-                num_points=8
-            ) for _ in range(n_backbone)]
-        )
-
-        self.head = nn.Linear(hidden_size, pred_dim)  # ✅ 输出多时间段 hazard logits
-        self.logits_dim = pred_dim
-
-    def forward(self, all_modalities):
-        img_feat = all_modalities['img']
-        img_feat = self.m_projector['img'](img_feat)
-
-        scores = self.token_scorer(img_feat).squeeze(-1)
-        topk_scores, topk_indices = torch.topk(scores, self.top_k, dim=1)
-        batch_indices = torch.arange(img_feat.size(0), device=img_feat.device).unsqueeze(-1).expand(-1, self.top_k)
-        img_feat = img_feat[batch_indices, topk_indices]
-
-        text_feat = all_modalities.get('text', None)
-        if text_feat is not None:
-            if text_feat.dim() > 2:
-                text_feat = text_feat.mean(dim=1)
-            text_feat = self.m_projector['text'](text_feat).unsqueeze(1)
-        else:
-            B = img_feat.size(0)
-            text_feat = self.missing_text_token.expand(B, 1, -1)
-
-        rna_feat = all_modalities.get('rna', None)
-        if rna_feat is not None:
-            if rna_feat.dim() > 2:
-                rna_feat = rna_feat.mean(dim=1)
-            rna_feat = self.m_projector['rna'](rna_feat).unsqueeze(1)
-
-        img_feat = self.cross_text(img_feat, text_feat, text_feat)
-        if rna_feat is not None:
-            img_feat = self.cross_rna(img_feat, rna_feat, rna_feat)
-
-        backbone_out = self.backbone(img_feat)
-        pooled = backbone_out.mean(dim=1)
-
-        hazard_logits = self.head(pooled)         # [B, pred_dim]
-        hazards = torch.sigmoid(hazard_logits)    # [B, pred_dim]
-        survival = torch.cumprod(1 - hazards, dim=1)  # [B, pred_dim]
-
-        return hazards, survival
-
-
-
-
-class CrossModalAttentionBlock(nn.Module):
-    def __init__(self, dim, n_head):
-        super().__init__()
-        self.attn = nn.MultiheadAttention(embed_dim=dim, num_heads=n_head, batch_first=True)
-        self.norm = nn.LayerNorm(dim)
-        self.mlp = nn.Sequential(
-            nn.Linear(dim, dim * 4),
-            nn.GELU(),
-            nn.Linear(dim * 4, dim),
-        )
-        self.norm2 = nn.LayerNorm(dim)
-
-    def forward(self, x: Tensor, context: Tensor) -> Tensor:
-        attn_out, _ = self.attn(x, context, context)
-        x = self.norm(x + attn_out)
-        x = self.norm2(x + self.mlp(x))
-        return x
-
-class CrossAttnFusionWithLearnableMissing(nn.Module):
-    def __init__(self, device, modalities: Dict[str, Modality], hidden_size,
-                 dropout_rate=0.1, pred_dim=20, mlp_ratio=4,
-                 n_token=16, n_backbone=3, n_head=4, mask_prob=0.1):
-        super().__init__()
-        self.device = device
-        self.modalities = modalities
-        self.hidden_size = hidden_size
-        self.n_token = n_token
-        self.m_names = list(modalities.keys())
-        self.mask_prob = mask_prob  # ✨ 新增
-
-        self.m_projector = nn.ModuleDict({
-            mm: QFormerEncoder(
-                feature_size=modalities[mm].feature_dim,
-                num_patches=n_token,
-                embed_dim=hidden_size,
-                num_heads=n_head,
-                mlp_ratio=mlp_ratio,
-                attn_drop=dropout_rate,
-                drop=dropout_rate
-            ) for mm in modalities
-        })
-
-        self.learnable_missing_token = nn.ParameterDict({
-            mm: nn.Parameter(torch.randn(n_token, hidden_size))
-            for mm in modalities
-        })
-
-        self.cross_attn = nn.ModuleList([
-            CrossTransformerBlock(
-                dim=hidden_size,
-                num_heads=n_head,
-                mlp_ratio=mlp_ratio,
-                qkv_bias=False,
-                drop=dropout_rate,
-                attn_drop=dropout_rate
-            ) for _ in range(len(self.m_names))
-        ])
-
-        self.head = nn.Linear(hidden_size * len(self.m_names), pred_dim)
-        self.logits_dim = pred_dim
-
-    def forward(self, all_modalities: Dict[str, torch.Tensor], training=True):
-        tf_hidden = {}
-        B = next(iter(all_modalities.values())).shape[0]  # batch size
-
-        for mm in self.m_names:
-            valid_mask = all_modalities.get(f"{mm}_valid", None)
-
-            # ✨ 随机 mask 一部分模态（仅在训练中启用）
-            if training and valid_mask is not None:
-                if torch.rand(1).item() < self.mask_prob:
-                    valid_mask = torch.zeros_like(valid_mask).bool()
-
-            if valid_mask is not None and valid_mask.all():
-                tf_hidden[mm] = self.m_projector[mm](all_modalities[mm])
-            else:
-                token = self.learnable_missing_token[mm].unsqueeze(0).repeat(B, 1, 1)
-                tf_hidden[mm] = token.to(self.device)
-
-        for i, mm_i in enumerate(self.m_names):
-            x = tf_hidden[mm_i]
-            other_tokens = [tf_hidden[mm_j] for j, mm_j in enumerate(self.m_names) if mm_j != mm_i]
-            if len(other_tokens) == 0:
-                continue
-            ox = torch.cat(other_tokens, dim=1)
-            tf_hidden[mm_i] = self.cross_attn[i](x, ox)
-
-        head_input = [tokens.mean(dim=1) for tokens in tf_hidden.values()]
-        head_input = torch.cat(head_input, dim=-1)
-        logits = self.head(head_input)
-
-        return logits
-
-
-class CrossAttnFusionDropMissing(nn.Module):
-    def __init__(self, device, modalities: Dict[str, Modality], hidden_size,
-                 dropout_rate=0.1, pred_dim=20, mlp_ratio=4,
-                 n_token=16, n_backbone=3, n_head=4):
-        super().__init__()
-        self.device = device
-        self.modalities = modalities
-        self.hidden_size = hidden_size
-        self.n_token = n_token
-        self.m_names = list(modalities.keys())
-
-        self.m_projector = nn.ModuleDict({
-            mm: QFormerEncoder(
-                feature_size=modalities[mm].feature_dim,
-                num_patches=n_token,
-                embed_dim=hidden_size,
-                num_heads=n_head,
-                mlp_ratio=mlp_ratio,
-                attn_drop=dropout_rate,
-                drop=dropout_rate
-            ) for mm in modalities
-        })
-
-        self.cross_attn = nn.ModuleDict({
-            mm: CrossTransformerBlock(
-                dim=hidden_size,
-                num_heads=n_head,
-                mlp_ratio=mlp_ratio,
-                qkv_bias=False,
-                drop=dropout_rate,
-                attn_drop=dropout_rate
-            ) for mm in self.m_names
-        })
-
-        # ⛔ 不预设 head 输入维度，forward 时动态根据有效模态数量拼接
-        self.pred_dim = pred_dim
-        self.head = nn.Linear(hidden_size * len(self.m_names), pred_dim)  # placeholder, not used directly
-        self.logits_dim = pred_dim
-
-    def forward(self, all_modalities: Dict[str, torch.Tensor]):
-        B = next(iter(all_modalities.values())).shape[0]
-        tf_hidden = {}
-
-        # Step 1: Project only valid modalities
-        for mm in self.m_names:
-            valid_mask = all_modalities.get(f"{mm}_valid", None)
-            if valid_mask is not None and valid_mask.all():
-                tf_hidden[mm] = self.m_projector[mm](all_modalities[mm])
-
-        if len(tf_hidden) == 0:
-            raise ValueError("All modalities are missing. Cannot proceed.")
-
-        # Step 2: Cross-attention among valid modalities
-        updated = {}
-        for mm_i in tf_hidden:
-            x = tf_hidden[mm_i]
-            other_tokens = [tf_hidden[mm_j] for mm_j in tf_hidden if mm_j != mm_i]
-            if other_tokens:
-                ox = torch.cat(other_tokens, dim=1)
-                updated[mm_i] = self.cross_attn[mm_i](x, ox)
-            else:
-                updated[mm_i] = x
-        tf_hidden = updated
-
-        # Step 3: Pool and fuse valid modalities
-        head_input = [v.mean(dim=1) for v in tf_hidden.values()]
-        head_input = torch.cat(head_input, dim=-1)
-
-        # ⛳ Head prediction using dynamic input dim
-        fusion_head = nn.Linear(head_input.shape[1], self.pred_dim).to(self.device)
-        logits = fusion_head(head_input)
-
-        return logits
 
 
 
